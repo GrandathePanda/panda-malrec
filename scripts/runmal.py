@@ -20,6 +20,8 @@ import atexit
 from mon_util import mon_cmd, guest_type
 import click_buttons
 
+global sample_name, sample_file
+
 def md5_for_file(fname, block_size=2**20):
     f = open(fname, 'rb')
     md5 = hashlib.md5()
@@ -117,6 +119,7 @@ logging.info(stdout)
 logging.info(stderr)
 
 # Check architecture of PE file
+print("Made it here!")
 pe = pefile.PE(sample_file, fast_load=True)
 if pe.FILE_HEADER.Machine == pefile.MACHINE_TYPE['IMAGE_FILE_MACHINE_AMD64']:
     logging.info("Sample detected as 64-bit")
@@ -194,12 +197,11 @@ guest_type(r"copy D:\{0} C:\Users\qemu\Desktop".format(sample_name) + '\n', mon)
 
 # Create our memory access socket
 qemu_socket = tempfile.mktemp()
+print("Qemu socket")
 logging.info("Creating memory access socket: {0}".format(qemu_socket))
 mon_cmd("pmemaccess {0}\n".format(qemu_socket), mon)
 
 # Warm up the Volatility part
-click_buttons.setup("Win7SP1x64" if is_64bit else "Win7SP1x86", "qemu://" + qemu_socket)
-
 # Run the sample
 logging.info("Starting sample.")
 # Handle 3 cases: driver, exe, dll
@@ -220,7 +222,6 @@ logging.info("Sleeping for {0} seconds...".format(exec_time))
 period = 10
 for _ in range(exec_time / period):
     time.sleep(period)
-    click_buttons.click_buttons(mon)
 
 # End the record
 logging.info("Ending record.")
