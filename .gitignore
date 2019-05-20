@@ -1,3 +1,4 @@
 qcow/*
 db/*
+iso/*
 *.pyc

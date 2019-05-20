@@ -17,6 +17,7 @@ import sqlite3
 import hashlib
 import tempfile
 import atexit
+from dumpmem import dumpmem
 from mon_util import mon_cmd, guest_type
 import click_buttons
 
@@ -54,7 +55,7 @@ def cleanup():
     c = conn.cursor()
     while True:
         try:
-            c.execute('INSERT INTO samples VALUES(?,?,?)', (run_id, sample_name, sample_md5))
+            c.execute('INSERT INTO samples VALUES(?,?,?)', (sample_name, sample_name, sample_md5))
             break
         except sqlite3.OperationalError:
             pass
@@ -63,7 +64,7 @@ def cleanup():
     conn.close()
 
     # All done, write the stamp
-    stampfile = os.path.join(logdir, 'stamps', run_id)
+    stampfile = os.path.join(logdir, 'stamps', sample_name)
     open(stampfile, 'w').close()
 
 atexit.register(cleanup)
@@ -73,7 +74,14 @@ conf.read(sys.argv[1])
 
 sample_name = sys.argv[2]
 instance = int(sys.argv[3])
-run_id = str(uuid.uuid4())
+malicious = bool(int(sys.argv[4]))
+run_subpath = None
+
+if malicious:
+  run_subpath = os.path.join("malicious", sample_name)
+else:
+  run_subpath = os.path.join("benign", sample_name)
+
 
 # Setup from config
 monitor_port = 1234 + instance
@@ -83,8 +91,8 @@ panda_exe = os.path.join(conf.get('Main', 'panda'), 'x86_64-softmmu', 'qemu-syst
 queuedir = os.path.join(basedir, 'queue')
 logdir = os.path.join(basedir, 'logs')
 rr_logdir = os.path.join(logdir, 'rr')
-rr_logname = os.path.join(rr_logdir, run_id)
-pcap_name = os.path.join(logdir, 'pcap', run_id + '.pcap')
+rr_logname = os.path.join(rr_logdir, run_subpath)
+pcap_name = os.path.join(logdir, 'pcap', sample_name+ '.pcap')
 logfile = os.path.join(logdir, 'text', time.strftime('%Y%m%d.%H.%M.%S.{0}.log').format(instance))
 database = conf.get('Main', 'db')
 
@@ -93,14 +101,20 @@ logging.basicConfig(filename=logfile, level=logging.DEBUG, format='%(asctime)s %
 
 # Startup msgs
 logging.info("Config file: {0}".format(sys.argv[1]))
-logging.info("UUID: {0}".format(run_id))
 logging.info("Sample: {0}".format(sample_name))
 
 # Claim ownership of this file
 logging.info("Moving sample into 'running' queue.")
 sample_file = os.path.join(queuedir, 'running', sample_name)
+pending_path = None
+
+if malicious:
+  pending_path = "pending/malicious"
+else:
+  pending_path = "pending/benign"
+
 shutil.move(
-    os.path.join(queuedir, 'pending', sample_name),
+    os.path.join(queuedir, pending_path, sample_name),
     sample_file
 )
 
@@ -109,7 +123,7 @@ sample_md5 = md5_for_file(sample_file)
 logging.info("MD5: {0}".format(sample_md5))
 
 # Make the CD image
-iso_file = os.path.join(basedir, 'iso', run_id + '.iso')
+iso_file = os.path.join(basedir, 'iso', sample_name + '.iso')
 logging.info("Creating CD image {0}".format(iso_file))
 genisoimage = ['/usr/bin/genisoimage', '-iso-level', '4', '-l', '-R', '-J', '-o', iso_file, sample_file]
 logging.info(str(genisoimage))
@@ -119,7 +133,6 @@ logging.info(stdout)
 logging.info(stderr)
 
 # Check architecture of PE file
-print("Made it here!")
 pe = pefile.PE(sample_file, fast_load=True)
 if pe.FILE_HEADER.Machine == pefile.MACHINE_TYPE['IMAGE_FILE_MACHINE_AMD64']:
     logging.info("Sample detected as 64-bit")
@@ -152,8 +165,8 @@ panda_args = [panda_exe,
               ]
 
 # Start the QEMU process
-panda_stdout = open(os.path.join(logdir, 'text', run_id + '.stdout'), 'w')
-panda_stderr = open(os.path.join(logdir, 'text', run_id + '.stderr'), 'w')
+panda_stdout = open(os.path.join(logdir, 'text', sample_name + '.stdout'), 'w')
+panda_stderr = open(os.path.join(logdir, 'text', sample_name + '.stderr'), 'w')
 panda = subprocess.Popen(panda_args, stdin=subprocess.PIPE, stdout=panda_stdout, stderr=panda_stderr)
 
 # Connect to the monitor
@@ -229,3 +242,23 @@ mon_cmd("end_record\n", mon)
 logging.info("Quitting PANDA.")
 mon.write("q\n")
 
+success, message, filepath = dumpmem(panda_exe, conf.get('VM', 'mem'), sample_name, rr_logname+"_memdump")
+
+if success:
+  logging.info(message)
+
+  try:
+    shutil.rmtree(rr_logname+"_memdump")
+    os.remove(rr_logname+"-rr.cmd")
+    os.remove(rr_logname+"-rr-nondet.log")
+    os.remove(rr_logname+"-rr-snp")
+  except e:
+    logging.error(e)
+    raise e
+
+  logging.info("Success. Exiting.")
+  sys.exit(0)
+else:
+  logging.error(message)
+
+  raise 
